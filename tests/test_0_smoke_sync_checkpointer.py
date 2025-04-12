@@ -1,11 +1,20 @@
 import pytest
-import asyncio
-from agent.sync_checkpointer import get_postgres_saver
+from agent.checkpointer import get_sync_checkpointer, delete_checkpoints
+
+checkpoint_ns = __name__
 
 @pytest.fixture
-def checkpointer():
-    checkpointer = get_postgres_saver()
+async def checkpointer():
+    checkpointer = await get_sync_checkpointer()
     return checkpointer
+
+@pytest.hookimpl(tryfirst=True, hookwrapper=True)
+async def pytest_sessionfinish(session, exitstatus):
+    """
+    Hook to execute cleanup code after all tests are complete.
+    """
+    #yield  # Run all other hooks first
+    await delete_checkpoints(checkpoint_ns=checkpoint_ns)
 
 def test_checkpoint_basic_functionality(checkpointer):
     """
@@ -15,7 +24,7 @@ def test_checkpoint_basic_functionality(checkpointer):
     config = {
         "configurable": {
             "thread_id": "test_thread_1",
-            "checkpoint_ns": "test_namespace"
+            "checkpoint_ns": checkpoint_ns
         }
     }
 

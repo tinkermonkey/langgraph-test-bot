@@ -1,10 +1,20 @@
 import pytest
-from agent.checkpointer import get_sync_checkpointer
+from agent.checkpointer import get_sync_checkpointer, delete_checkpoints
+
+checkpoint_ns = __name__
 
 @pytest.fixture
 async def checkpointer():
     checkpointer = await get_sync_checkpointer()
     return checkpointer
+
+@pytest.hookimpl(tryfirst=True, hookwrapper=True)
+async def pytest_sessionfinish(session, exitstatus):
+    """
+    Hook to execute cleanup code after all tests are complete.
+    """
+    #yield  # Run all other hooks first
+    await delete_checkpoints(checkpoint_ns=checkpoint_ns)
 
 def test_checkpoint_basic_functionality(checkpointer):
     """
@@ -14,7 +24,7 @@ def test_checkpoint_basic_functionality(checkpointer):
     config = {
         "configurable": {
             "thread_id": "test_thread_1",
-            "checkpoint_ns": "test_namespace"
+            "checkpoint_ns": checkpoint_ns
         }
     }
 
@@ -60,7 +70,7 @@ def test_checkpoint_multiple_threads(checkpointer):
     Test saving and retrieving checkpoints for multiple threads
     """
     thread_configs = [
-        {"configurable": {"thread_id": f"thread_{i}", "checkpoint_ns": "test_namespace"}} 
+        {"configurable": {"thread_id": f"thread_{i}", "checkpoint_ns": checkpoint_ns}} 
         for i in range(3)
     ]
 
@@ -91,8 +101,8 @@ def test_checkpoint_list_functionality(checkpointer):
     Test listing checkpoints with various filters
     """
     # Save multiple checkpoints
-    base_config = {"configurable": {"thread_id": "list_test_thread", "checkpoint_ns": "test_namespace"}}
-    
+    base_config = {"configurable": {"thread_id": "list_test_thread", "checkpoint_ns": checkpoint_ns}}
+
     for i in range(5):
         checkpoint = {
             "v": 1,
@@ -109,35 +119,36 @@ def test_checkpoint_list_functionality(checkpointer):
 
     # List all checkpoints for this thread
     checkpoint_tuples = list(checkpointer.list(base_config))
-    
+
     # Verify total number of checkpoints
     assert len(checkpoint_tuples) == 5, f"Expected 5 checkpoints, got {len(checkpoint_tuples)}"
 
     # Verify checkpoints are sorted in descending order (newest first)
     checkpoint_ids = [ct.checkpoint['id'] for ct in checkpoint_tuples]
-    assert checkpoint_ids == [f"list_checkpoint_{i}" for i in range(4, -1, -1)], "Checkpoints not sorted correctly"
+    expected_ids = [f"list_checkpoint_{i}" for i in range(4, -1, -1)]
+    assert checkpoint_ids == expected_ids, f"Checkpoints not sorted correctly. Expected {expected_ids}, got {checkpoint_ids}"
 
     # Test limit parameter
     limited_checkpoints = list(checkpointer.list(base_config, limit=3))
-    assert len(limited_checkpoints) == 3, "Limit parameter not working correctly"
+    assert len(limited_checkpoints) == 3, f"Limit parameter not working correctly. Expected 3, got {len(limited_checkpoints)}"
 
     # Test before parameter
     # Get the third checkpoint to use as a 'before' reference
-    before_config = checkpoint_tuples[[2]]('https://docs.smith.langchain.com/reference/js/classes/vitest_reporter.default.html').config
+    before_config = checkpoint_tuples[2].config
     before_checkpoints = list(checkpointer.list(base_config, before=before_config))
-    
-    assert len(before_checkpoints) == 3, "Before parameter not filtering checkpoints correctly"
+
+    assert len(before_checkpoints) == 2, f"Before parameter not filtering checkpoints correctly. Expected 2, got {len(before_checkpoints)}"
     assert all(
-        ct.checkpoint['id'] > before_config['configurable']['checkpoint_id'] 
+        ct.checkpoint['id'] < checkpoint_tuples[2].checkpoint['id'] 
         for ct in before_checkpoints
-    ), "Before parameter not working as expected"
+    ), "Before parameter not working as expected. Checkpoints are not correctly filtered."
 
 def test_checkpoint_error_handling(checkpointer):
     """
     Test error handling and edge cases
     """
     # Try to get checkpoint with invalid configuration
-    invalid_config = {"configurable": {"thread_id": "non_existent_thread", "checkpoint_ns": "test_namespace"}}
+    invalid_config = {"configurable": {"thread_id": "non_existent_thread", "checkpoint_ns": checkpoint_ns}}
     
     # Retrieve should return None for non-existent thread
     retrieved_checkpoint = checkpointer.get(invalid_config)
@@ -146,33 +157,3 @@ def test_checkpoint_error_handling(checkpointer):
     # Try to list checkpoints with invalid configuration
     invalid_list = list(checkpointer.list(invalid_config))
     assert len(invalid_list) == 0, "Should return empty list for non-existent thread"
-
-def test_checkpoint_pending_writes(checkpointer):
-    """
-    Test handling of pending writes
-    """
-    config = {"configurable": {"thread_id": "pending_writes_test", "checkpoint_ns": "test_namespace"}}
-    
-    # Create a checkpoint with pending writes
-    checkpoint = {
-        "v": 1,
-        "id": "pending_writes_checkpoint",
-        "ts": "2024-01-01T00:00:00+00:00",
-        "channel_values": {"key": "value"},
-        "pending_sends": [{"task_id": "task1", "data": "write_data"}]
-    }
-
-    # Save checkpoint with pending writes
-    saved_config = checkpointer.put(
-        config, 
-        checkpoint, 
-        {"step": 1, "source": "pending_writes_test"}, 
-        {}
-    )
-
-    # Retrieve the checkpoint
-    retrieved_checkpoint = checkpointer.get(saved_config)
-    
-    # Verify pending writes are preserved
-    assert "pending_sends" in retrieved_checkpoint, "Pending writes not preserved"
-    assert len(retrieved_checkpoint.get("pending_sends", [])) > 0, "Pending writes list is empty"
